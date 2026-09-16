@@ -41,13 +41,18 @@ RULE_PAGES = [
     "https://null404-rules.pages.dev/06-gang.html",
 ]
 
+# Cloudflareブロック回避用のヘッダー設定
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8'
+}
+
 def search_rules_site(query):
     matches = []
-    headers = {'User-Agent': 'Mozilla/5.0'}
     
     for url in RULE_PAGES:
         try:
-            res = requests.get(url, headers=headers, timeout=5)
+            res = requests.get(url, headers=HEADERS, timeout=10)
             if res.status_code != 200:
                 continue
             res.encoding = res.apparent_encoding
@@ -58,7 +63,6 @@ def search_rules_site(query):
                 text = element.get_text(separator=' | ').strip()
                 text = " ".join(text.split())
                 if text and query.lower() in text.lower():
-                    # 重複を防ぎつつ追加
                     if text not in matches:
                         matches.append(text)
                         if len(matches) >= 3:
@@ -70,13 +74,13 @@ def search_rules_site(query):
 def search_spreadsheet(query):
     sheet_id = "1gLWYyOXIPj5Zn-OZqHDy0R7juRwSg6Qpv-0FRU8nHkE"
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
-    headers = {'User-Agent': 'Mozilla/5.0'}
     
     try:
-        res = requests.get(url, headers=headers, timeout=5)
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        if res.status_code != 200:
+            return []
+            
         res.encoding = 'utf-8'
-        
-        # CSV形式として正しく読み込み
         csv_file = io.StringIO(res.text)
         reader = csv.reader(csv_file)
         
