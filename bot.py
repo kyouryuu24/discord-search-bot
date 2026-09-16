@@ -41,12 +41,10 @@ RULE_PAGES = [
 ]
 
 # 表記揺れ（エイリアス）辞書
-# 「入力された文字」: 「検索したい正式名称」
 ALIAS_MAP = {
     "デベステ": "Deveste",
     "デベステエイト": "Deveste Eight",
     # 必要に応じてここに追加可能です
-    # 例: "テーザー": "Taser",
 }
 
 # ブラウザ偽装用セッション
@@ -81,12 +79,12 @@ def search_rules_site(query):
     return matches
 
 def search_spreadsheet(query):
-    sheet_id = "1gLWYyOXIPj5Zn-OZqHDy0R7juRwSg6Qpv-0FRU8nHkE"
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+    # Webに公開されたCSV URLから直接取得
+    url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSERXdms_ZOSdihgcdlJNm-NneQRlydiThyBxmRbqyhUkIA8PYzE9lYuFVfFZV85wKn921LR0L47bPG/pub?output=csv"
     
     try:
         res = session.get(url, timeout=5)
-        if res.status_code != 200 or "cf-error-details" in res.text:
+        if res.status_code != 200:
             return []
             
         res.encoding = 'utf-8'
@@ -111,13 +109,11 @@ async def on_ready():
 
 @bot.command(name='検索')
 async def search(ctx, *, query: str):
-    # 表記揺れ辞書に含まれている場合は置換し、部分一致でも置換できるように対応
     search_query = query.strip()
     for alias, official_name in ALIAS_MAP.items():
         if alias.lower() in search_query.lower():
             search_query = search_query.replace(alias, official_name)
     
-    # 検索中の表示（置き換わった場合は変換後のワードも表示）
     if search_query != query.strip():
         await ctx.send(f"🔍 『{query}』 (⇒ {search_query}) で検索中...")
     else:
