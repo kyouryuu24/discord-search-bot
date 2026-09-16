@@ -9,8 +9,8 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
-# --- Renderで常時稼働させるためのWebサーバー(Keep-Alive) ---
-app = Flask('')
+# --- Render用 Keep-Alive サーバー ---
+app = Flask(__name__)
 
 @app.route('/')
 def home():
@@ -20,10 +20,11 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-# スレッドでWebサーバーを並行起動
-threading.Thread(target=run_flask, daemon=True).start()
+# バックグラウンドでFlaskを起動
+flask_thread = threading.Thread(target=run_flask, daemon=True)
+flask_thread.start()
 
-# --- Discord Bot設定 ---
+# --- Discord Bot 設定 ---
 load_dotenv()
 TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 
@@ -31,7 +32,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# 検索対象とするルールサイトの全主要ページURL
+# ルールサイトのページリスト
 RULE_PAGES = [
     "https://null404-rules.pages.dev/01-support.html",
     "https://null404-rules.pages.dev/02-general.html",
@@ -41,7 +42,6 @@ RULE_PAGES = [
     "https://null404-rules.pages.dev/06-gang.html",
 ]
 
-# Cloudflareブロック回避用のヘッダー設定
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8'
@@ -49,16 +49,14 @@ HEADERS = {
 
 def search_rules_site(query):
     matches = []
-    
     for url in RULE_PAGES:
         try:
-            res = requests.get(url, headers=HEADERS, timeout=10)
+            res = requests.get(url, headers=HEADERS, timeout=5)
             if res.status_code != 200:
                 continue
             res.encoding = res.apparent_encoding
             soup = BeautifulSoup(res.text, 'html.parser')
             
-            # テーブルの行（tr）やリスト・段落から検索
             for element in soup.find_all(['tr', 'p', 'li', 'h1', 'h2', 'h3']):
                 text = element.get_text(separator=' | ').strip()
                 text = " ".join(text.split())
@@ -76,7 +74,7 @@ def search_spreadsheet(query):
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
     
     try:
-        res = requests.get(url, headers=HEADERS, timeout=10)
+        res = requests.get(url, headers=HEADERS, timeout=5)
         if res.status_code != 200:
             return []
             
@@ -137,4 +135,7 @@ async def search(ctx, *, query: str):
         
     await ctx.send(embed=embed)
 
-bot.run(TOKEN)
+if TOKEN:
+    bot.run(TOKEN)
+else:
+    print("エラー: DISCORD_BOT_TOKEN が設定されていません。")
