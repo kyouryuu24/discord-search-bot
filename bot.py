@@ -40,6 +40,15 @@ RULE_PAGES = [
     "https://null404-rules.pages.dev/06-gang.html",
 ]
 
+# 表記揺れ（エイリアス）辞書
+# 「入力された文字」: 「検索したい正式名称」
+ALIAS_MAP = {
+    "デベステ": "Deveste",
+    "デベステエイト": "Deveste Eight",
+    # 必要に応じてここに追加可能です
+    # 例: "テーザー": "Taser",
+}
+
 # ブラウザ偽装用セッション
 session = requests.Session()
 session.headers.update({
@@ -53,7 +62,6 @@ def search_rules_site(query):
     for url in RULE_PAGES:
         try:
             res = session.get(url, timeout=5)
-            # Cloudflare等のエラーレスポンス（HTML）をチェックして弾く
             if res.status_code != 200 or "cf-error-details" in res.text:
                 continue
             
@@ -103,10 +111,20 @@ async def on_ready():
 
 @bot.command(name='検索')
 async def search(ctx, *, query: str):
-    await ctx.send(f"🔍 『{query}』 を検索中...")
+    # 表記揺れ辞書に含まれている場合は置換し、部分一致でも置換できるように対応
+    search_query = query.strip()
+    for alias, official_name in ALIAS_MAP.items():
+        if alias.lower() in search_query.lower():
+            search_query = search_query.replace(alias, official_name)
     
-    rule_results = search_rules_site(query)
-    sheet_results = search_spreadsheet(query)
+    # 検索中の表示（置き換わった場合は変換後のワードも表示）
+    if search_query != query.strip():
+        await ctx.send(f"🔍 『{query}』 (⇒ {search_query}) で検索中...")
+    else:
+        await ctx.send(f"🔍 『{search_query}』 で検索中...")
+    
+    rule_results = search_rules_site(search_query)
+    sheet_results = search_spreadsheet(search_query)
     
     embed = discord.Embed(
         title=f"「{query}」の検索結果",
