@@ -44,19 +44,20 @@ RULE_PAGES = [
 ALIAS_MAP = {
     "デベステ": "Deveste",
     "デベステエイト": "Deveste Eight",
-    # 必要に応じてここに追加可能です
 }
 
 # ブラウザ偽装用セッション
 session = requests.Session()
 session.headers.update({
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
 })
 
 def search_rules_site(query):
     matches = []
+    clean_query = query.lower().replace(" ", "")
+    
     for url in RULE_PAGES:
         try:
             res = session.get(url, timeout=5)
@@ -68,10 +69,12 @@ def search_rules_site(query):
             
             for element in soup.find_all(['tr', 'p', 'li', 'h1', 'h2', 'h3']):
                 text = element.get_text(separator=' | ').strip()
-                text = " ".join(text.split())
-                if text and query.lower() in text.lower():
-                    if text not in matches:
-                        matches.append(text)
+                text_single_line = " ".join(text.split())
+                
+                # 検索判定用に空白を詰めて小文字化して比較
+                if text_single_line and clean_query in text_single_line.lower().replace(" ", ""):
+                    if text_single_line not in matches:
+                        matches.append(text_single_line)
                         if len(matches) >= 3:
                             return matches
         except Exception:
@@ -79,8 +82,9 @@ def search_rules_site(query):
     return matches
 
 def search_spreadsheet(query):
-    # Webに公開されたCSV URLから直接取得
     url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSERXdms_ZOSdihgcdlJNm-NneQRlydiThyBxmRbqyhUkIA8PYzE9lYuFVfFZV85wKn921LR0L47bPG/pub?output=csv"
+    matches = []
+    clean_query = query.lower().replace(" ", "")
     
     try:
         res = session.get(url, timeout=5)
@@ -91,10 +95,15 @@ def search_spreadsheet(query):
         csv_file = io.StringIO(res.text)
         reader = csv.reader(csv_file)
         
-        matches = []
         for row in reader:
-            row_text = " | ".join([cell.strip() for cell in row if cell.strip()])
-            if query.lower() in row_text.lower():
+            # 空白セルを除外して結合
+            cells = [cell.strip() for cell in row if cell.strip()]
+            if not cells:
+                continue
+            
+            row_text = " | ".join(cells)
+            # 検索判定（小文字化＆スペース無視で比較）
+            if clean_query in row_text.lower().replace(" ", ""):
                 if row_text not in matches:
                     matches.append(row_text)
                     if len(matches) >= 3:
@@ -109,21 +118,26 @@ async def on_ready():
 
 @bot.command(name='検索')
 async def search(ctx, *, query: str):
-    search_query = query.strip()
+    raw_query = query.strip()
+    search_query = raw_query
+    
+    # エイリアス変換
     for alias, official_name in ALIAS_MAP.items():
-        if alias.lower() in search_query.lower():
-            search_query = search_query.replace(alias, official_name)
-    
-    if search_query != query.strip():
-        await ctx.send(f"🔍 『{query}』 (⇒ {search_query}) で検索中...")
+        if alias.lower() in raw_query.lower():
+            search_query = raw_query.lower().replace(alias.lower(), official_name)
+            break
+            
+    if search_query.lower() != raw_query.lower():
+        await ctx.send(f"🔍 『{raw_query}』 (⇒ {search_query}) で検索中...")
     else:
-        await ctx.send(f"🔍 『{search_query}』 で検索中...")
+        await ctx.send(f"🔍 『{raw_query}』 で検索中...")
     
-    rule_results = search_rules_site(search_query)
-    sheet_results = search_spreadsheet(search_query)
+    # 変換後のワードと元のワードの両方で検索を試行
+    rule_results = search_rules_site(search_query) or search_rules_site(raw_query)
+    sheet_results = search_spreadsheet(search_query) or search_spreadsheet(raw_query)
     
     embed = discord.Embed(
-        title=f"「{query}」の検索結果",
+        title=f"「{raw_query}」の検索結果",
         color=discord.Color.green()
     )
     
