@@ -9,22 +9,21 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
-# --- Render用 Keep-Alive サーバー ---
+# --- Keep-Alive Webサーバー ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is alive!"
+    return "Bot is active!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-# バックグラウンドでFlaskを起動
 flask_thread = threading.Thread(target=run_flask, daemon=True)
 flask_thread.start()
 
-# --- Discord Bot 設定 ---
+# --- Discord Bot設定 ---
 load_dotenv()
 TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 
@@ -32,7 +31,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# ルールサイトのページリスト
 RULE_PAGES = [
     "https://null404-rules.pages.dev/01-support.html",
     "https://null404-rules.pages.dev/02-general.html",
@@ -42,18 +40,23 @@ RULE_PAGES = [
     "https://null404-rules.pages.dev/06-gang.html",
 ]
 
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8'
-}
+# ブラウザ偽装用セッション
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+})
 
 def search_rules_site(query):
     matches = []
     for url in RULE_PAGES:
         try:
-            res = requests.get(url, headers=HEADERS, timeout=5)
-            if res.status_code != 200:
+            res = session.get(url, timeout=5)
+            # Cloudflare等のエラーレスポンス（HTML）をチェックして弾く
+            if res.status_code != 200 or "cf-error-details" in res.text:
                 continue
+            
             res.encoding = res.apparent_encoding
             soup = BeautifulSoup(res.text, 'html.parser')
             
@@ -74,8 +77,8 @@ def search_spreadsheet(query):
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
     
     try:
-        res = requests.get(url, headers=HEADERS, timeout=5)
-        if res.status_code != 200:
+        res = session.get(url, timeout=5)
+        if res.status_code != 200 or "cf-error-details" in res.text:
             return []
             
         res.encoding = 'utf-8'
@@ -114,21 +117,13 @@ async def search(ctx, *, query: str):
         formatted_rule = "\n".join([f"・{r}" for r in rule_results])
         if len(formatted_rule) > 1000:
             formatted_rule = formatted_rule[:1000] + "..."
-        embed.add_field(
-            name="📜 ルールサイトからの結果",
-            value=formatted_rule,
-            inline=False
-        )
+        embed.add_field(name="📜 ルールサイトからの結果", value=formatted_rule, inline=False)
     
     if sheet_results:
         formatted_sheet = "\n".join([f"・{s}" for s in sheet_results])
         if len(formatted_sheet) > 1000:
             formatted_sheet = formatted_sheet[:1000] + "..."
-        embed.add_field(
-            name="📊 車両価格スプレッドシートからの結果",
-            value=formatted_sheet,
-            inline=False
-        )
+        embed.add_field(name="📊 車両価格スプレッドシートからの結果", value=formatted_sheet, inline=False)
         
     if not rule_results and not sheet_results:
         embed.description = "該当する情報が見つかりませんでした。"
@@ -137,5 +132,3 @@ async def search(ctx, *, query: str):
 
 if TOKEN:
     bot.run(TOKEN)
-else:
-    print("エラー: DISCORD_BOT_TOKEN が設定されていません。")
