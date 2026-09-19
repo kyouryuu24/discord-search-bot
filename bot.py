@@ -6,6 +6,7 @@ from flask import Flask
 import requests
 from bs4 import BeautifulSoup
 import discord
+from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
@@ -29,134 +30,209 @@ TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.guilds = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-RULE_PAGES = [
-    "https://null404-rules.pages.dev/01-support.html",
-    "https://null404-rules.pages.dev/02-general.html",
-    "https://null404-rules.pages.dev/03-vehicle.html",
-    "https://null404-rules.pages.dev/04-job.html",
-    "https://null404-rules.pages.dev/05-crime.html",
-    "https://null404-rules.pages.dev/06-gang.html",
-]
+# 検索ヘルパー関数：チャンネル内メッセージから前後5行を抽出
+async def search_in_channels(channels, keyword, limit_per_channel=100):
+    results = []
+    clean_keyword = keyword.lower()
 
-# 表記揺れ（エイリアス）辞書
-ALIAS_MAP = {
-    "デベステ": "Deveste",
-    "デベステエイト": "Deveste Eight",
-}
-
-# ブラウザ偽装用セッション
-session = requests.Session()
-session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
-})
-
-def search_rules_site(query):
-    matches = []
-    clean_query = query.lower().replace(" ", "")
-    
-    for url in RULE_PAGES:
-        try:
-            res = session.get(url, timeout=5)
-            if res.status_code != 200 or "cf-error-details" in res.text:
-                continue
-            
-            res.encoding = res.apparent_encoding
-            soup = BeautifulSoup(res.text, 'html.parser')
-            
-            for element in soup.find_all(['tr', 'p', 'li', 'h1', 'h2', 'h3']):
-                text = element.get_text(separator=' | ').strip()
-                text_single_line = " ".join(text.split())
-                
-                # 検索判定用に空白を詰めて小文字化して比較
-                if text_single_line and clean_query in text_single_line.lower().replace(" ", ""):
-                    if text_single_line not in matches:
-                        matches.append(text_single_line)
-                        if len(matches) >= 3:
-                            return matches
-        except Exception:
+    for channel in channels:
+        if not isinstance(channel, discord.TextChannel):
             continue
-    return matches
+        try:
+            # 履歴を取得（最新100件）
+            messages = [msg async for msg in channel.history(limit=limit_per_channel)]
+            messages.reverse()  # 時系列順にソート
 
-def search_spreadsheet(query):
-    url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSERXdms_ZOSdihgcdlJNm-NneQRlydiThyBxmRbqyhUkIA8PYzE9lYuFVfFZV85wKn921LR0L47bPG/pub?output=csv"
-    matches = []
-    clean_query = query.lower().replace(" ", "")
-    
-    try:
-        res = session.get(url, timeout=5)
-        if res.status_code != 200:
-            return []
-            
-        res.encoding = 'utf-8'
-        csv_file = io.StringIO(res.text)
-        reader = csv.reader(csv_file)
-        
-        for row in reader:
-            # 空白セルを除外して結合
-            cells = [cell.strip() for cell in row if cell.strip()]
-            if not cells:
-                continue
-            
-            row_text = " | ".join(cells)
-            # 検索判定（小文字化＆スペース無視で比較）
-            if clean_query in row_text.lower().replace(" ", ""):
-                if row_text not in matches:
-                    matches.append(row_text)
-                    if len(matches) >= 3:
+            for idx, msg in enumerate(messages):
+                if not msg.content:
+                    continue
+                
+                if clean_keyword in msg.content.lower():
+                    # 前後5件のメッセージを取得してコンテキスト作成
+                    start = max(0, idx - 5)
+                    end = min(len(messages), idx + 6)
+                    context_msgs = messages[start:end]
+
+                    context_lines = []
+                    for c_msg in context_msgs:
+                        line = f"{c_msg.author.display_name}: {c_msg.content}"
+                        # ヒットした対象行を強調
+                        if c_msg.id == msg.id:
+                            line = f"**> {line}**"
+                        context_lines.append(line)
+
+                    context_text = "\n".join(context_lines)
+                    results.append({
+                        "channel": channel,
+                        "message": msg,
+                        "context": context_text,
+                        "jump_url": msg.jump_url,
+                        "created_at": msg.created_at.strftime("%Y/%m/%d %H:%M")
+                    })
+                    if len(results) >= 5: # 最大5件まで取得
                         break
-        return matches
-    except Exception:
-        return []
+        except discord.Forbidden:
+            continue
+        except Exception as e:
+            print(f"Error reading channel {channel.name}: {e}")
+
+    return results
+
+# --- UI コンポーネント (Modal & Views) ---
+
+# キーワード入力用モーダル
+class KeywordModal(discord.ui.Modal):
+    def __init__(self, target_type, target_obj):
+        super().__init__(title="キーワード検索")
+        self.target_type = target_type  # 'category' or 'channel'
+        self.target_obj = target_obj    # CategoryChannel or TextChannel
+
+        self.keyword_input = discord.ui.TextInput(
+            label="検索キーワード",
+            placeholder="検索したい言葉を入力してください",
+            required=True,
+            max_length=100
+        )
+        self.add_item(self.keyword_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        keyword = self.keyword_input.value
+
+        if self.target_type == 'category':
+            channels = self.target_obj.text_channels
+            target_name = f"カテゴリー: {self.target_obj.name}"
+        else:
+            channels = [self.target_obj]
+            target_name = f"チャンネル: #{self.target_obj.name}"
+
+        # メッセージ検索実行
+        search_results = await search_in_channels(channels, keyword)
+
+        # 全員が見える形で結果を作成して送信
+        embed = discord.Embed(
+            title="🔍 検索結果",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="検索対象", value=target_name, inline=False)
+        embed.add_field(name="キーワード", value=keyword, inline=False)
+
+        if search_results:
+            embed.description = f"**{len(search_results)}件** ヒットしました。"
+            for res in search_results:
+                field_title = f"#{res['channel'].name} ({res['created_at']}) - [メッセージへジャンプ]({res['jump_url']})"
+                field_value = res['context']
+                if len(field_value) > 1000:
+                    field_value = field_value[:1000] + "..."
+                embed.add_field(name=field_title, value=field_value, inline=False)
+        else:
+            embed.description = "該当するメッセージが見つかりませんでした。"
+
+        # 全員が見えるチャンネルに結果を投稿
+        await interaction.channel.send(embed=embed)
+        await interaction.followup.send("検索結果を出力しました。", ephemeral=True)
+
+# チャンネル選択セレクトボックス
+class ChannelSelectView(discord.ui.View):
+    def __init__(self, category: discord.CategoryChannel):
+        super().__init__(timeout=60)
+        options = [
+            discord.SelectOption(label=f"#{ch.name}", value=str(ch.id))
+            for ch in category.text_channels[:25]
+        ]
+        if options:
+            select = discord.ui.Select(placeholder="検索したいチャンネルを選択してください", options=options)
+            select.callback = self.select_callback
+            self.add_item(select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        channel_id = int(interaction.data['values'][0])
+        channel = interaction.guild.get_channel(channel_id)
+        await interaction.response.send_modal(KeywordModal(target_type='channel', target_obj=channel))
+
+# カテゴリー選択セレクトボックス
+class CategorySelectView(discord.ui.View):
+    def __init__(self, categories, search_mode):
+        super().__init__(timeout=60)
+        self.search_mode = search_mode  # 'category' or 'channel'
+        options = [
+            discord.SelectOption(label=cat.name, value=str(cat.id))
+            for cat in categories[:25]
+        ]
+        if options:
+            select = discord.ui.Select(placeholder="検索したいカテゴリーを選択してください", options=options)
+            select.callback = self.select_callback
+            self.add_item(select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        category_id = int(interaction.data['values'][0])
+        category = interaction.guild.get_channel(category_id)
+
+        if self.search_mode == 'category':
+            await interaction.response.send_modal(KeywordModal(target_type='category', target_obj=category))
+        else:
+            if not category.text_channels:
+                await interaction.response.send_message("このカテゴリーにはテキストチャンネルがありません。", ephemeral=True)
+                return
+            await interaction.response.send_message(
+                "検索したいチャンネルを選択してください:",
+                view=ChannelSelectView(category),
+                ephemeral=True
+            )
+
+# メイン選択ビュー（ボタン2つ）
+class SearchTypeView(discord.ui.View):
+    def __init__(self, guild: discord.Guild):
+        super().__init__(timeout=60)
+        self.guild = guild
+
+    @discord.ui.button(label="カテゴリーで検索", style=discord.ButtonStyle.primary)
+    async def category_search(self, interaction: discord.Interaction, button: discord.ui.Button):
+        categories = self.guild.categories
+        if not categories:
+            await interaction.response.send_message("カテゴリーが存在しません。", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "検索したいカテゴリーを選択してください:",
+            view=CategorySelectView(categories, search_mode='category'),
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="チャンネルごとに検索", style=discord.ButtonStyle.secondary)
+    async def channel_search(self, interaction: discord.Interaction, button: discord.ui.Button):
+        categories = self.guild.categories
+        if not categories:
+            await interaction.response.send_message("カテゴリーが存在しません。", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "検索したいチャンネルが含まれるカテゴリーを選択してください:",
+            view=CategorySelectView(categories, search_mode='channel'),
+            ephemeral=True
+        )
+
+# --- イベント・コマンド ---
 
 @bot.event
 async def on_ready():
     print(f'ログイン成功: {bot.user.name}')
+    try:
+        synced = await bot.tree.sync()
+        print(f"スラッシュコマンドを同期しました: {len(synced)} 件")
+    except Exception as e:
+        print(f"コマンド同期エラー: {e}")
 
-@bot.command(name='検索')
-async def search(ctx, *, query: str):
-    raw_query = query.strip()
-    search_query = raw_query
-    
-    # エイリアス変換
-    for alias, official_name in ALIAS_MAP.items():
-        if alias.lower() in raw_query.lower():
-            search_query = raw_query.lower().replace(alias.lower(), official_name)
-            break
-            
-    if search_query.lower() != raw_query.lower():
-        await ctx.send(f"🔍 『{raw_query}』 (⇒ {search_query}) で検索中...")
-    else:
-        await ctx.send(f"🔍 『{raw_query}』 で検索中...")
-    
-    # 変換後のワードと元のワードの両方で検索を試行
-    rule_results = search_rules_site(search_query) or search_rules_site(raw_query)
-    sheet_results = search_spreadsheet(search_query) or search_spreadsheet(raw_query)
-    
+@bot.tree.command(name="検索", description="サーバー内のログ・資料を検索します")
+async def slash_search(interaction: discord.Interaction):
     embed = discord.Embed(
-        title=f"「{raw_query}」の検索結果",
-        color=discord.Color.green()
+        title="📂 過去ログ・資料検索システム",
+        description="下のボタンを押すと、検索条件を選択できます。",
+        color=discord.Color.blue()
     )
-    
-    if rule_results:
-        formatted_rule = "\n".join([f"・{r}" for r in rule_results])
-        if len(formatted_rule) > 1000:
-            formatted_rule = formatted_rule[:1000] + "..."
-        embed.add_field(name="📜 ルールサイトからの結果", value=formatted_rule, inline=False)
-    
-    if sheet_results:
-        formatted_sheet = "\n".join([f"・{s}" for s in sheet_results])
-        if len(formatted_sheet) > 1000:
-            formatted_sheet = formatted_sheet[:1000] + "..."
-        embed.add_field(name="📊 車両価格スプレッドシートからの結果", value=formatted_sheet, inline=False)
-        
-    if not rule_results and not sheet_results:
-        embed.description = "該当する情報が見つかりませんでした。"
-        
-    await ctx.send(embed=embed)
+    # 本人のみにパネル表示（他の人には見えない）
+    await interaction.response.send_message(embed=embed, view=SearchTypeView(interaction.guild), ephemeral=True)
 
 if TOKEN:
     bot.run(TOKEN)
