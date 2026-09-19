@@ -129,7 +129,7 @@ class KeywordModal(discord.ui.Modal):
                     field_value = field_value[:1000] + "..."
                 embed.add_field(name=field_title, value=field_value, inline=False)
         else:
-            embed.description = "該当するメッセージが見つかりませんでした。"
+            embed.description = "該当する情報が見つかりませんでした。"
 
         # 全員が見えるチャンネルに結果を投稿
         await interaction.channel.send(embed=embed)
@@ -231,8 +231,8 @@ async def slash_search(interaction: discord.Interaction):
         description="下のボタンを押すと、検索条件を選択できます。",
         color=discord.Color.blue()
     )
-    # 本人のみにパネル表示（他の人には見えない）
-    await interaction.response.send_message(embed=embed, view=SearchTypeView(interaction.guild), ephemeral=True)
+    # ephemeral=False に変更し、全員に見える形でメッセージを表示
+    await interaction.response.send_message(embed=embed, view=SearchTypeView(interaction.guild), ephemeral=False)
 
 if TOKEN:
     bot.run(TOKEN)
