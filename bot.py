@@ -39,7 +39,7 @@ ALIAS_MAP = {
     "デベステエイト": "Deveste Eight",
     "タイラス": "Tyrus",
     "ゼントーノ": "Zentorno",
-    "クライガー": "Krieger",
+    "クリーガー": "Krieger",
     "ネロ": "Nero",
     "イグナス": "Ignus",
     "テゼロクト": "Tezeract",
